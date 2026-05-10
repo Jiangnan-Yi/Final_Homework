@@ -87,7 +87,7 @@ print("系统初始化完成！\n")
 # 2. 核心分析函数
 # ========================
 
-def query_hourly_demand(location_id=None, day_type='全部'):
+def query_hourly_demand(data, location_id=None, day_type='全部'):
     """M4-1: 时段需求量查询"""
     if location_id:
         query_data = data[data['PULocationID'] == int(location_id)]
@@ -136,7 +136,7 @@ def query_hourly_demand(location_id=None, day_type='全部'):
     }
 
 
-def query_location_ranking(rank_type='上车', top_n=10):
+def query_location_ranking(data, rank_type='上车', top_n=10):
     """M4-2: 区域热度排名"""
     col = 'PULocationID' if rank_type == '上车' else 'DOLocationID'
     title = '上车' if rank_type == '上车' else '下车'
@@ -169,7 +169,7 @@ def query_location_ranking(rank_type='上车', top_n=10):
     }
 
 
-def predict_demand(location_id, hour, weekday):
+def predict_demand(location_id, hour, weekday, demand, le, rf_model):
     """M4-3: 预测指定区域时段的出行需求量"""
     hour_sin = np.sin(2 * np.pi * hour / 24)
     hour_cos = np.cos(2 * np.pi * hour / 24)
@@ -206,7 +206,7 @@ def predict_demand(location_id, hour, weekday):
     }
 
 
-def query_route_info(location_from=None, location_to=None):
+def query_route_info(data, location_from=None, location_to=None):
     """M4-4: 路线信息查询（费用、距离、时间）"""
     query = data
     conditions = []
@@ -236,7 +236,7 @@ def query_route_info(location_from=None, location_to=None):
     return result
 
 
-def query_payment_analysis():
+def query_payment_analysis(data):
     """M4-5: 支付方式与费用分析"""
     payment_names = {1: '信用卡', 2: '现金', 3: '免费', 4: '争议/拒付'}
 
@@ -288,7 +288,7 @@ def query_payment_analysis():
     }
 
 
-def query_peak_hours(location_id=None):
+def query_peak_hours(data, location_id=None):
     """M4-6: 高峰时段分析"""
     if location_id:
         query_data = data[data['PULocationID'] == int(location_id)]
@@ -301,7 +301,7 @@ def query_peak_hours(location_id=None):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     for ax, (day_type, day_label, color) in zip(axes, [
-        (~query_data['is_weekend'], '工作日', 'steelblue'),
+        (~query_data['is_weekend'], '工作日', 'steelblue'),  # ~True = False（工作日）
         (query_data['is_weekend'], '周末', 'coral')
     ]):
         hourly = query_data[day_type].groupby('pickup_hour').size()
@@ -405,20 +405,22 @@ def parse_query(text):
 # ========================
 # 4. 回答生成模块
 # ========================
-def generate_answer(intent, params):
+def generate_answer(intent, params, data, demand, le, rf_model):
     """根据意图调用对应函数并生成回答"""
 
     if intent == 'hourly_demand':
-        r = query_hourly_demand(params['location'], params['day_type'])
-        return (f"📊 时段需求分析结果：\n"
+        r = query_hourly_demand(data, params['location'], params['day_type'])
+        return (f"时段需求分析结果：\n"
                 f"   • 全天高峰时段：{r['peak_hour']}:00（{r['peak_value']:,}单）\n"
                 f"   • 早高峰：{r['morning_peak']}\n"
                 f"   • 晚高峰：{r['evening_peak']}\n"
                 f"   • 平均每小时：{r['avg_demand']}单\n"
-                f"   📈 图表已保存：{r['chart']}")
+                f"  图表已保存：{r['chart']}")
+
 
     elif intent == 'ranking':
-        r = query_location_ranking(params['rank_type'], params['top_n'])
+
+        r = query_location_ranking(data, params['rank_type'], params['top_n'])
         top_str = '\n'.join([f"   {i + 1}. 区域{loc}：{cnt:,}单" for i, (loc, cnt) in enumerate(r['top_list'])])
         return (f"🏆 区域热度排名（{params['rank_type']}量 TOP {params['top_n']}）：\n{top_str}\n"
                 f"   📈 图表已保存：{r['chart']}")
@@ -426,7 +428,7 @@ def generate_answer(intent, params):
     elif intent == 'predict':
         if params['location'] is None or params['hour'] is None or params['weekday'] is None:
             return "⚠️ 需求预测需要指定：区域编号、时间和星期。例如：'预测区域100 周一下午5点的需求量'"
-        r = predict_demand(params['location'], params['hour'], params['weekday'])
+        r = predict_demand(params['location'], params['hour'], params['weekday'], demand, le, rf_model)
         return (f"🔮 需求预测结果：\n"
                 f"   • 区域{r['location']} {r['weekday']} {r['hour']}:00\n"
                 f"   • 预测需求量：{r['predicted_demand']}单\n"
@@ -434,7 +436,7 @@ def generate_answer(intent, params):
                 f"   • 高峰时段：{r['is_rush_hour']} | 周末：{r['is_weekend']}")
 
     elif intent == 'route_info':
-        r = query_route_info(params['route_from'], params['route_to'])
+        r = query_route_info(data, params['route_from'], params['route_to'])
         if 'error' in r:
             return f"⚠️ {r['error']}"
         return (f"🚕 路线信息（{r['description']}）：\n"
@@ -446,19 +448,19 @@ def generate_answer(intent, params):
                 f"   • 平均小费：${r['avg_tip']}")
 
     elif intent == 'payment':
-        r = query_payment_analysis()
-        return (f"💳 支付方式分析：\n"
+        r = query_payment_analysis(data)
+        return (f"支付方式分析：\n"
                 f"   • 分布：{r['payment_distribution']}\n"
                 f"   • 信用卡平均小费：${r['credit_card_tip_avg']}\n"
                 f"   • 现金平均小费：${r['cash_tip_avg']}\n"
-                f"   📈 图表已保存：{r['chart']}")
+                f"   图表已保存：{r['chart']}")
 
     elif intent == 'peak_hours':
-        r = query_peak_hours(params['location'])
-        return (f"⏰ 高峰时段分析完成！\n   📈 图表已保存：{r['chart']}")
+        r = query_peak_hours(data, params['location'])
+        return (f"高峰时段分析完成！\n   图表已保存：{r['chart']}")
 
     else:
-        return ("🤔 抱歉，我无法理解您的问题。请尝试以下提问方式：\n"
+        return ("抱歉，我无法理解您的问题。请尝试以下提问方式：\n"
                 "   • '区域100 工作日 分时段需求量'\n"
                 "   • '上车量 TOP 5 区域排名'\n"
                 "   • '预测区域100 周二 下午3点的需求'\n"
@@ -470,7 +472,14 @@ def generate_answer(intent, params):
 # ========================
 # 5. 命令行交互循环
 # ========================
-def main():
+def run_qa_system(data, demand, rf_model, le):
+    """命令行交互问答循环 - 供 main.py 调用"""
+
+    print(f"列名: {list(data.columns)}")
+    print(f"is_weekend 是否存在: {'is_weekend' in data.columns}")
+    if 'is_weekend' in data.columns:
+        print(f"is_weekend 类型: {data['is_weekend'].dtype}")
+        print(f"is_weekend 唯一值: {data['is_weekend'].unique()[:5]}")
     print("\n" + "=" * 60)
     print("欢迎使用纽约出租车数据问答系统！")
     print("=" * 60)
@@ -486,7 +495,7 @@ def main():
 
     while True:
         try:
-            user_input = input("\n🔍 请输入您的问题：").strip()
+            user_input = input("\n请输入您的问题：").strip()
 
             if user_input.lower() in ['quit', 'exit', '退出', 'q']:
                 print("\n感谢使用，再见！")
@@ -503,7 +512,7 @@ def main():
                 params['intent'] = 'hourly_demand'  # 默认时段查询
 
             # 生成回答
-            answer = generate_answer(params['intent'], params)
+            answer = generate_answer(params['intent'], params, data, demand, le, rf_model)
             print(f"\n{answer}")
             print("-" * 60)
 
@@ -516,4 +525,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # 独立运行时：加载数据、初始化模型、启动问答
+    data = pd.read_parquet('yellow_tripdata_2023-01_cleaned.parquet')
+    # ... 初始化代码 ...
+    run_qa_system(data, demand, rf_model, le)
